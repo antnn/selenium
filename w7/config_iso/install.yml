@@ -1,0 +1,95 @@
+---
+- hosts: 127.0.0.1
+  connection: local
+
+  tasks:
+    - name: Creating base configuration files for Windows and Ansible
+    # Put drivers in dest/$WinpeDriver$
+      win_setup:
+        # destination (root dir) for config files, generate ISO file in next tasks
+        dest: '{{ config_iso_files_dir }}/'
+        # Change credentials after ansible is installed in windows if needded
+        admin_name: '\Administrator'
+        admin_password: "Passw0rd!"
+        user_name: "IEUser"
+        user_password: "Passw0rd!"
+        computer_name: "IEWIN"
+
+        # gets converted to install.json to use in Windows Powershell
+        # files for installation with `name`s should be placed to `toinstall/` directory in next tasks
+        install:
+          - description: windows 7 sp1 x86
+            index: 1
+            name: windows6.1-kb976932-x86_c3516bc5c9e69fee6d9ac4f981f5b95977a8a2fa.exe
+            args: /unattend /nodialog
+          - index: 2
+            name: OpenSSH-Win32-v8.9.1.0.msi
+            args: /passive /norestart
+          - index: 3
+            name: x86_f2061d1c40b34f88efbe55adf6803d278aa67064.msu
+          - index: 4
+            description: win7 sha256 codesign
+            restart: true
+            name: windows6.1-kb4474419-v3-x86_0f687d50402790f340087c576886501b3223bec6.msu
+          - index: 5
+            name: ndp48-x86-x64-allos-enu.exe
+            args: /q /norestart
+          - description: "wmf 5.1"
+            index: 6
+            name: "Win7-KB3191566-x86.zip"
+            # $ExecutionContext.InvokeCommand.ExpandString interpolates variables such as $CONFIGDRIVE
+            cmd: >-
+              powershell -ExecutionPolicy Bypass $CONFIGDRIVE\main.ps1 -Unzip
+              $INSTALLDIR\Win7-KB3191566-x86.zip -Dest $env:temp\Win7-KB3191566-x86 &&
+              powershell -ExecutionPolicy Bypass $CONFIGDRIVE\main.ps1 -Msu
+              $env:temp\Win7-KB3191566-x86\Win7-KB3191566-x86.msu &&
+              rd /s /q $env:temp\Win7-KB3191566-x86
+            restart: true
+    - name: Download win7 sp1 x86
+      ansible.builtin.get_url:
+        url: >-
+          https://catalog.s.download.windowsupdate.com/msdownload/update/software/svpk/2011/02/windows6.1-kb976932-x86_c3516bc5c9e69fee6d9ac4f981f5b95977a8a2fa.exe
+        dest: '{{ config_iso_files_dir }}/toinstall/'
+        checksum: sha256:e5449839955a22fc4dd596291aff1433b998f9797e1c784232226aba1f8abd97
+    - name: Download OpenSSH-Win32-v8.9.1.0.msi
+      ansible.builtin.get_url:
+        url: >-
+          https://github.com/PowerShell/Win32-OpenSSH/releases/download/v8.9.1.0p1-Beta/OpenSSH-Win32-v8.9.1.0.msi
+        dest: '{{ config_iso_files_dir }}/toinstall/'
+        checksum: sha256:16a0e2b6f01b86d866e422fb6f27b867ab5ed63cade94171003338395f0f26c6
+    - name: Download x86_f2061d1c40b34f88efbe55adf6803d278aa67064.msu
+      ansible.builtin.get_url:
+        url: >-
+          https://catalog.s.download.windowsupdate.com/msdownload/update/software/crup/2011/05/windows6.1-kb2533552-x86_f2061d1c40b34f88efbe55adf6803d278aa67064.msu
+        dest: '{{ config_iso_files_dir }}/toinstall/'
+        checksum: sha256:8e10ad0aa6096fefd18d385ec7bff399a197ca87257fe5c87c68fd6f80ea1138
+    - name: Download win7 sha256 codesign update
+      ansible.builtin.get_url:
+        url: >-
+          https://catalog.s.download.windowsupdate.com/c/msdownload/update/software/secu/2019/09/windows6.1-kb4474419-v3-x86_0f687d50402790f340087c576886501b3223bec6.msu
+        dest: '{{ config_iso_files_dir }}/toinstall/'
+        checksum: sha256:8cf49fc7ac61e0b217859313a96337b149ab41b3307eb0d9529615142ea34c6c
+    - name: Download ndp48-x86-x64-allos-enu.exe
+      ansible.builtin.get_url:
+        url: >-
+          https://download.visualstudio.microsoft.com/download/pr/2d6bb6b2-226a-4baa-bdec-798822606ff1/8494001c276a4b96804cde7829c04d7f/ndp48-x86-x64-allos-enu.exe
+        dest: '{{ config_iso_files_dir }}/toinstall/'
+        checksum: sha256:68c9986a8dcc0214d909aa1f31bee9fb5461bb839edca996a75b08ddffc1483f
+    - name: Download WMF 5.1"
+      ansible.builtin.get_url:
+        url: >-
+          https://download.microsoft.com/download/6/F/5/6F5FF66C-6775-42B0-86C4-47D41F2DA187/Win7-KB3191566-x86.zip
+        dest: '{{ config_iso_files_dir }}/toinstall/'
+        checksum: sha256:eb7e2c4ce2c6cb24206474a6cb8610d9f4bd3a9301f1cd8963b4ff64e529f563
+    - name: Create an windows config ISO
+      ansible.builtin.command: >-
+        mkisofs -joliet-long -l -J -r -V WIN_AUTOINSTALL -o {{ iso_output_path }}  {{ config_iso_files_dir }}/
+    # DOESNT WORK AS SIMPLE COMAMAND ABOVE
+    # - name: Create an windows config ISO file with Joliet support
+    #   community.general.iso_create:
+    #     src_files:
+    #       - '{{ config_iso_files_dir }}/'
+    #     dest_iso: '{{ iso_output_path }}/'
+    #     interchange_level: 4
+    #     joliet: 3
+    #     vol_ident: WIN_AUTOINSTALL

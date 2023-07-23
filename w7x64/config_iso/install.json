@@ -1,0 +1,85 @@
+[
+  {
+    "order": 0,
+    "name": "promtail.cmd",
+    "ver": "",
+    "sourceDir": "${CONFIG_ISO}",
+    "destination": "${CONFIG_ISO}/winpe/Graphana",
+    "pass": "WinPE-Presetup",
+    "interpreter": "cmd"
+  },
+  {
+    "order": 1,
+    "name": "promtail.zip",
+    "ver": "v2.5.0",
+    "sum": "dd52b93d1f19d26425058cb9e169d2ab46e61a656e89b64aa2afd70710a28a44",
+    "url": "https://github.com/grafana/loki/releases/download/v2.5.0/promtail-windows-386.exe.zip",
+    "destination": "${CONFIG_ISO}/winpe/Graphana",
+    "pass": "WinPE-Presetup"
+  },
+  {
+    "order": 2,
+    "name": "virtio-win.iso",
+    "ver": "0.1.173-2",
+    "sum": "8da37d153be6c12fdc25205517c3727fec7799d1060ac38111f404b274478344",
+    "url": "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-virtio/virtio-win-0.1.173-2/virtio-win.iso"
+  },
+  {
+    "order": 3,
+    "name": "grafana-agent-installer.exe",
+    "ver": "v0.24.1",
+    "sum": "59f6217062d8a6a2b986f155aad21375bd47f2c812f0afc2becf5b2a52fe02ed",
+    "url": "https://github.com/grafana/agent/releases/download/v0.24.1/grafana-agent-installer.exe",
+    "args": "/S /EnableExporter true"
+  },
+  {
+    "order": 4 ,
+    "name": "MicrosoftEasyFix51044.msi",
+    "sum": "f55b3aab50ce0d22cc3ec504f17a9bdb5a8840263e10209c12b3beddb12ab2eb",
+    "url": "https://download.microsoft.com/download/0/6/5/0658B1A7-6D2E-474F-BC2C-D69E5B9E9A68/MicrosoftEasyFix51044.msi",
+    "args": "/passive /norestart"
+  },
+  {
+    "order": 5 ,
+    "name": "qemu-ga-x86_64.msi",
+    "ver": "103.0.0-1",
+    "sum": "b5d1c3dc6877ae0388709faecd6b9f1a30e3431cab5185c39bb59ed9724173cb",
+    "url": "https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/archive-qemu-ga/qemu-ga-win-103.0.0-1.el9_0/qemu-ga-x86_64.msi",
+    "args": "/passive /norestart"
+  },
+  {
+    "order": 6 ,
+    "name": "java.msi",
+    "ver": "8u292-b10",
+    "sum": "5f988fe7360e769918831c0842f8aa4b3f71103b32cdb67ded57750fcb42ecdc",
+    "url": "https://github.com/adoptium/temurin16-binaries/releases/download/jdk-16.0.2%2B7/OpenJDK16U-jdk_x86-32_windows_hotspot_16.0.2_7.msi",
+    "args": "/passive /norestart ADDLOCAL=FeatureEnvironment,FeatureMain,FeatureJarFileRunWith,FeatureJavaHome"
+  },
+  {
+    "order": 7 ,
+    "name": "IEDriverServer.exe.zip",
+    "ver": "4.0.0",
+    "sum": "1e5769b2f60435b69c79b33cd234f64d0e47f7c8974925bd1cdda32ea41f2f47",
+    "url": "https://github.com/SeleniumHQ/selenium/releases/download/selenium-4.0.0/IEDriverServer_Win32_4.0.0.zip",
+    "destination": "$env:ProgramFiles\\Selenium"
+  },
+  {
+    "order": 8 ,
+    "name": "seleniumnode.ps1",
+    "ver": "4.0.0",
+    "sourceDir": "$CONFIGDRIVE",
+    "autoStart": true,
+    "addToPath": true,
+    "interpreter": "powershell.exe -ExecutionPolicy Bypass -File",
+    "destination": "$env:ProgramFiles\\Selenium"
+  },
+  {
+    "order": 9 ,
+    "name": "selenium-server.jar",
+    "ver": "4.1.2",
+    "sum": "9d47fde8932ed567b831a0a1ee725c56b9564723fbc3fec4326fda0caf35c1e3",
+    "url": "https://github.com/SeleniumHQ/selenium/releases/download/selenium-4.1.0/selenium-server-4.1.2.jar",
+    "sourceDir": "$INSTALLDIR",
+    "destination": "$env:ProgramFiles\\Selenium"
+  }
+]
