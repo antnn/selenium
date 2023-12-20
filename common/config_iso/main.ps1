@@ -1,116 +1,107 @@
-param (
-    [Parameter(Mandatory = $false, Position = 0, ValueFromPipeline = $false)]
-    [System.String]
-    $UnZip,
+#@formatter:off
+$errorLog = "$env:SystemDrive\main.ps1.error.log"
+$ErrorActionPreference = "Continue"
 
-    [Parameter(Mandatory = $false, Position = 1, ValueFromPipeline = $false)]
-    [System.String]
-    $Dest,
+$CONFIGDRIVE = "{{config_drive}}"
+$DONE_FILE = "$env:SystemDrive\ansible-win-setup-done-list-file.log"
+$ONE_INSTANCE_LOCKFILE_PATH = "$env:TEMP\mainps1.lock"
 
-    [Parameter(Mandatory = $false, Position = 2, ValueFromPipeline = $false)]
-    [System.String]
-    $Msu
-)
-$ErrorActionPreference = "Stop"
-$CONFIGDRIVE = "D:"
-$INSTALLDIR = "${CONFIGDRIVE}\toinstall"
-$INSTALL_LOG = "$env:SystemDrive\main_script_installed.log"
-$LockFile = "$env:TEMP\mainps1.lock"
 
 function Main() {
-    $main_autostart = [PSCustomObject]@{
+    $ONE_INSTANCE_LOCKFILE = OneInstance($ONE_INSTANCE_LOCKFILE_PATH)
+
+    $main_ps1_autostart = [PSCustomObject]@{
         name        = "start.ps1"
         sourceDir   = "$CONFIGDRIVE"
         autoStart   = $True
-        interpreter = "powershell.exe -ExecutionPolicy Bypass -File"
+        interpreter = "powershell.exe -NoExit -ExecutionPolicy Bypass -File"
         destination = "$CONFIGDRIVE"
     }
-    $FileStream = $null # race condition between FirstLogonCommands and autostart
-    try {
-        $FileStream = [System.IO.File]::Open($LockFile, 'Create', 'Write')
-    }
-    catch {
-        exit
-    }
-
     try {
         Get-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run" `
             -Name "start.ps1" > $null
     }
     catch {
-        # run once
-        reg add "HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update" /v AUOptions /t REG_DWORD /d 1 /f
-        reg add "HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\ControlPanel" /v StartupPage /t REG_DWORD /d 1 /f
-        reg add "HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Explorer\ControlPanel" /v AllItemsIconView /t REG_DWORD /d 0 /f
-        Start-Process wmic -ArgumentList 'useraccount where name="IEUser" set PasswordExpires=false'
-        Enable-RDP
-        Enable-WinRM # for Ansible
-
-        # SP1 installation forces reboot (BUG) add to autostart itself
-        _AutoStart($main_autostart)
+        # NOTE: Win7 SP1 installation forces reboot disregarding "/norestart" option
+        # https://social.technet.microsoft.com/Forums/ie/en-US/c4b7c3fc-037c-4e45-ab11-f6f64837521a/how-to-disable-reboot-after-sp1-installation-distribution-as-exe-via-sccm?forum=w7itproinstall
+        # It should continue installing after reboot skiping installed packages
+        _AutoStart($main_ps1_autostart)
     }
 
     $installJson = Get-Content "${CONFIGDRIVE}\install.json"
-    # Pass JSON array [{....}] Deserialize<object[]>
-    $installJson = [JSON]::Sort([JSON]::Deserialize($installJson))
-    foreach ($item in $installJson) {
-        $_test = IsInstalled($item)
-        if (-Not $_test) {
-            _dispatch($item)
-            AlreadyInstalledWrite($item)
-            if ($item.restart) {
-                Restart-Computer -Force
-                shutdown /r /t 0
-            }
-        }
-    }
+    $installItems = GetInstallItems($installJson)
+    DispatchInstallItems($installItems)
 
+    Enable-WinRM
 
-    CleanUp $FileStream $LockFile $main_autostart
+    CleanUp $ONE_INSTANCE_LOCKFILE $main_ps1_autostart
     Stop-Computer -Force
     shutdown /s /t 0
 }
 
-function CleanUp ($FileStream, $LockFile, $main_autostart) {
-    net user administrator /active:no
-    Remove-ItemProperty -Force -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run" `
-        -Name $main_autostart.name
-    $FileStream.Close()
-    $FileStream.Dispose()
-    Remove-Item -Path $LockFile -Force
 
+function OneInstance($path) {
+    # It will start second time after first user login by autostart.
+    try {
+        return [System.IO.File]::Open($path, 'Create', 'Write')
+    }
+    catch {
+        Write-Error "Only one instance of main.ps1 is allowed"
+        exit
+    }
 }
-function _dispatch($item) {
-    if ($item.win_pass) {
-        return #WinPE
+
+function GetInstallItems($json) {
+    return [JSON]::Sort([JSON]::Deserialize($json))
+}
+
+function IsItemDone($item) {
+    return $doneLog -contains $item.id
+}
+
+function MarkItemDone($item) {
+    $doneLog += "$( $item.id )`n"
+    Add-Content -Path $DONE_FILE -Value "$( $item.id )`n"
+}
+
+
+function DispatchInstallItems($items) {
+    foreach ($item in $items) {
+        if (!(IsItemDone($item))) {
+            DispatchItem($item)
+            MarkItemDone($item)
+            if ($item.restart) {
+                RestartComputer
+            }
+        }
+
     }
-    $ext = Get-ext($item)
-    if ( $ext -eq "msi") {
-        _Msi($item)
+}
+
+
+$handlers = @{
+    "file"      = { param($item) _InstallFile($item.file) }
+    "package"   = { param($item) _InstallPackage($item.package) }
+    "zip"       = { param($item) _Zip($item.zip) }
+    "copy"      = { param($item) _Copy($item.copy) }
+    "cmd"       = { param($item) _RunCMD($item.cmd) }
+    "registry"  = { param($item) _SetRegistry($item.registry) }
+    "addToPath" = { param($item) _AddToPath($item.path) }
+}
+
+function DispatchItem($item) {
+    if (-not $item.type) {
+        throw "Item missing required type property"
     }
-    if ( $ext -eq "exe") {
-        _Exe($item)
+    $handler = $handlers[$item.type]
+    if (-not $handler) {
+        throw "No handler for $( $item.type )"
     }
-    if ( $ext -eq "msu") {
-        _Wusa($item)
+    try {
+        & $handler $item
     }
-    if ( $ext -eq "cab") {
-        _Dism($item)
-    }
-    if ( $ext -eq "zip") {
-        _Zip($item)
-    }
-    if ($item.sourceDir.length -gt 0) {
-        _Copy($item)
-    }
-    if ($item.autoStart) {
-        _AutoStart($item)
-    }
-    if ($item.addToPath) {
-        _AddToPath($item)
-    }
-    if ($item.cmd) {
-        _CMD($item)
+    catch {
+        Write-Error "Failed to dispatch $($item.type): $_"
     }
 }
 
@@ -155,160 +146,195 @@ $scriptAssembly = "System.Web.Extensions, Version=3.5.0.0, Culture=neutral, Publ
 Add-Type -ReferencedAssemblies $scriptAssembly -TypeDefinition $code -Language CSharp
 
 
-Function _unzip([string]$file, [string]$destination) {
-    mkdir_-p($destination)
-    $shell = New-Object -ComObject Shell.Application
-    $zip_src = $shell.NameSpace($file)
-    if (!$zip_src) {
-        throw "Cannot find file: $file"
-    }
-    $zip_dest = $shell.NameSpace($destination)
-    $zip_dest.CopyHere($zip_src.Items(), 1044)
-}
 Function Wait-Process($name) {
     Do {
         Start-Sleep 2
-        $instanceCount = (Get-Process | Where-Object { $_.Name -eq $name } | Measure-Object).Count
+        $instanceCount = (Get-Process | Where-Object {
+                $_.Name -eq $name
+            } | Measure-Object).Count
     } while ($instanceCount -gt 0)
 }
 
 
-Function Add-ToPath ([string]$path) {
-    $old = (Get-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Session Manager\Environment' -Name path).path
-    $new = "$old;$path"
-    Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Session Manager\Environment' -Name path -Value $new
+Function _AddToPath([string]$path) {
+    $path = _ExpandString($path);
+    $_path = [Environment]::GetEnvironmentVariable('PATH', 'Machine')
+    [Environment]::SetEnvironmentVariable('PATH', "$_path;$path", 'Machine')
 }
 
-Function Add-ToStartup([string]$name, [string]$value) {
-    New-ItemProperty -Force -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run" `
-        -PropertyType String -Name $name -Value $value
+
+function Get-Ext($path) {
+    $path.split(".")[-1];
 }
 
-function Enable-RDP() {
-    Write-Host -ForegroundColor DarkGreen  "Enabling Remote desktop"
-    Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server'-name "fDenyTSConnections" -Value 0
-    Start-Process netsh -ArgumentList "advfirewall firewall set rule group=`"remote desktop`" new enable=yes"
-}
-
-function Get-Ext($item) {
-    $item.name.split(".")[-1];
-}
-
-function mkdir_-p($dest) {
-    if (Test-Path $dest) {
+function MakeDirectoryParents($path) {
+    if (Test-Path $path) {
         return
     }
-    Write-Host -ForegroundColor DarkGreen  "Creating path: $dest"
-    New-Item -Force -ItemType File -Path "$dest\file"
-    Remove-Item -Force -Path "$dest\file"
+    New-Item -Force -ItemType File -Path "$path\file"
+    Remove-Item -Force -Path "$path\file"
 }
+
 Function _ExpandString($str) {
-    return $ExecutionContext.InvokeCommand.ExpandString($str) # Interpolate strings in install.json: "$INSTALLDIR", "$env:..."
+    # Interpolate strings in install.json: "$INSTALLDIR", "$env:..."
+    return $ExecutionContext.InvokeCommand.ExpandString($str) 
+}
+
+
+$packageHandlers = @{
+    "msi" = { param($pkg) _InstallMsi $pkg }
+    "exe" = { param($pkg) _InstallExe $pkg }
+    "msu" = { param($pkg) _InstallWusa $pkg }
+    "cab" = { param($pkg) _InstallDism $pkg }
+}
+
+function _InstallPackage($pkg) {
+
+    $ext = Get-FileExtension $pkg.path
+
+    $handler = $packageHandlers[$ext]
+    if (-not $handler) {
+        throw "No handler for .$ext packages"
+    }
+
+    try {
+        & $handler $pkg
+    }
+    catch {
+        Write-Error "Failed to install package: $_"
+    }
+
+}
+
+
+
+Function _SetRegistry($item) {
+    if (!$item.state) {
+        return;
+    }
+    $path = _ExpandString($item.path)
+    $value = $item.value
+    if ($item.state -eq "present") {
+        New-Item -Force:$item.force  -Path $path -Value $value -ItemType $item.type
+        return
+    }
+    if ($item.state -eq "property") {
+        New-ItemProperty -Force:$item.force -Path $path -Value $value -ItemType $item.type
+        return
+    }
+    if ($item.state -eq "absent") {
+        Remove-Item -Recurse:$item.recurse -Path $path
+        return
+    }
+}
+
+Function _InstallFile($file) {
+    if (!$file.state) {
+        return;
+    }
+    $path = _ExpandString($file.path)
+    if ($file.state -eq "directory") {
+        Write-Host -ForegroundColor DarkGreen  "Creating a path: $path"
+        if ($file.parents) {
+            MakeDirectoryParents($path)
+        }
+        else {
+            New-Item -Force:$item.force -ItemType Directory -Path $path
+        }
+        return
+    }
+    if ($file.state -eq "touch") {
+        New-Item -Force:$item.force -Path $path
+        return
+    }
+    if ($file.state -eq "present") {
+        New-Item -Force:$item.force  -Path $path -Value $file.$value
+        return
+    }
+    if ($file.state -eq "absent") {
+        Remove-Item -Recurse:$item.recurse -Path $path
+        return
+    }
+
 }
 Function _Copy($item) {
-    if ($item.sourceDir -eq $item.destination) { return }
-    $name = $item.name
-    Write-Host -ForegroundColor DarkGreen  "Copying: $name"
-    $s = $item.sourceDir;
-    $d = $item.destination
-    $s = _ExpandString("$s\$name");
-    $d = _ExpandString("$d");
-    #mkdir_-p($d)
-    Copy-Item -Force -Path $s -Destination $d
-}
-function _Exe($item) {
-    if ($item.destination) {
-        # Installed by simply Copying
+    if ($item.src -eq $item.dest) {
         return
     }
-    $path = $item.name
-    Write-Host -ForegroundColor DarkGreen  "Running: $path"
-    $path = "$INSTALLDIR\$path"
-    $_args = $item.args
-    Start-Process $path -Wait -ArgumentList " $_args"
+    $item.src = _ExpandString($item.src)
+    $item.dest = _ExpandString($item.dest)
+    Write-Host -ForegroundColor DarkGreen  "Copying: " $item.src " to " $item.dest
+    Copy-Item -Force:$item.force -Path $item.src -Destination $item.dest
 }
-function _Msi($item) {
-    $path = $item.name
-    Write-Host -ForegroundColor DarkGreen  "Installing: $path"
-    $path = "$INSTALLDIR\$path"
-    $_args = $item.args
-    Start-Process msiexec.exe -Wait -ArgumentList "/I $path $_args"
+function _InstallExe($pkg) {
+    Write-Host -ForegroundColor DarkGreen  "Running: " $pkg.path
+    Start-Process $pkg.path -Wait -ArgumentList $pkg.args
 }
-function wusaf($path) {
-    Write-Host -ForegroundColor DarkGreen  "Installing updates: $path"
+function _InstallMsi($pkg) {
+    Write-Host -ForegroundColor DarkGreen  "Installing: " $pkg.path
+    Start-Process msiexec.exe -Wait -ArgumentList  "/I $( $pkg.path ) $( $pkg.args )"
+}
+function _InstallWusa($pkg) {
+    Write-Host -ForegroundColor DarkGreen  "Installing updates (wusa): $( $pkg.path )"
     Wait-Process -name wusa
-    Start-Process wusa.exe -Wait -ArgumentList " $path /quiet /NoRestart"
+    Start-Process wusa.exe -Wait -ArgumentList "$( $pkg.path ) $( $pkg.args )"
     Wait-Process -name wusa
 }
-function _Wusa($pkg) {
-    $path = $pkg.name
-    $path = "$INSTALLDIR\$path"
-    wusaf($path)
-}
-function dismf($path) {
-    Write-Host -ForegroundColor DarkGreen  "Installing updates: $path"
+function _InstallDism($pkg) {
+    Write-Host -ForegroundColor DarkGreen  "Installing updates (dism): $( $pkg.path )"
     Wait-Process -name dism
-    Start-Process dism.exe -Wait -ArgumentList "/Online /Add-Package /PackagePath:$path /NoRestart"
+    Start-Process dism.exe -Wait -ArgumentList "/Online /Add-Package /PackagePath: $( $pkg.path ) $( $pkg.args )"
     Wait-Process -name dism
 }
-function _Dism($pkg) {
-    $path = $pkg.name
-    #$pkg = $pkg.split(" ") -join ' /PackagePath:'
-    $path = "$INSTALLDIR\$path"
-    dismf($path)
+
+function _unzip([string]$path, [string]$dest) {
+    $shell = New-Object -ComObject Shell.Application
+    $zip_src = $shell.NameSpace($path)
+    if (!$zip_src) {
+        throw "Cannot find file: $path"
+    }
+    $zip_dest = $shell.NameSpace($dest)
+    $zip_dest.CopyHere($zip_src.Items(), 1044)
+}
+function _Zip($zip) {
+    $zip.path = _ExpandString($zip.path)
+    $zip.dest = _ExpandString($zip.dest)
+    if (-Not$zip.dest) {
+        return
+    }
+    Write-Host -ForegroundColor DarkGreen  "Extracting: $( $zip.path ) to $( $zip.dest )"
+    _unzip -path $zip.path -dest $zip.dest
+}
+# use wisely
+function _RunCMD($cmd) {
+    $command = _ExpandString($cmd)
+    cmd /C $command
+}
+function AppendToDoneList($item) {
+    $item.index | Out-File -Append $DoneList
 }
 
 function _AutoStart($item) {
-    if ($item.start) {
-        $entry = $item.start
-    }
-    else {
-        $entry = $item.name
-    }
+    $entry = $item.name
     $interpreter = $item.interpreter
     $_args = $item.args
     $dest = $item.destination
     $dest = _ExpandString($dest)
-    Add-ToStartup -name $entry -value "cmd /C $interpreter `"${dest}\${entry}`" $_args"
-}
-function _AddToPath($item) {
-    $p = $item.destination;
-    $p = _ExpandString($p);
-    Add-ToPath -Path $p
-}
-function _Zip($item) {
-    $path = $item.name
-    $dest = $item.destination
-    if (-Not $dest) {
-        return
-    }
-    $path = "$INSTALLDIR\$path"
-    $dest = _ExpandString($dest)
-    Write-Host -ForegroundColor DarkGreen  "Extracting: $path"
-    #mkdir_-p($dest)
-    _unzip -file $path -destination $dest
-}
-# use wisely
-function _CMD($item) {
-    $command = _ExpandString($item.cmd)
-    cmd /C $command
-}
-function AlreadyInstalledWrite($item) {
-    $item.name | Out-File -Append $INSTALL_LOG
+    $value = "cmd /C $interpreter `"${dest}\${entry}`" $_args"
+    New-ItemProperty -Force -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run" `
+        -PropertyType String -Name $item.name -Value $value
 }
 
-function IsInstalled($item) {
-    return [bool] ($_installed -match $item.name)
-}
 
 function Enable-WinRM {
     $networkListManager = [Activator]::CreateInstance(`
-        [Type]::GetTypeFromCLSID([Guid]"{DCB00C01-570F-4A9B-8D69-199FDBA5723B}"))
+            [Type]::GetTypeFromCLSID([Guid]"{DCB00C01-570F-4A9B-8D69-199FDBA5723B}"))
     $connections = $networkListManager.GetNetworkConnections()
     $connections | ForEach-Object {
         $_.GetNetwork().SetCategory(1)
     }
-
+    # Enable-PSRemoting -Force Only works under Administrator account
+    # E.g: Start-Process powershell.exe -Credential $Credential
     Enable-PSRemoting -Force
     winrm quickconfig -q
 
@@ -317,27 +343,61 @@ function Enable-WinRM {
     winrm set winrm/config/service '@{AllowUnencrypted="true"}'
     winrm set winrm/config/winrs '@{MaxMemoryPerShellMB="2048"}'
     Restart-Service -Name WinRM
-    netsh advfirewall firewall add rule name="WinRM-HTTP" dir=in `
-        localport=5985 protocol=TCP action=allow
+    netsh advfirewall firewall add rule name = "WinRM-HTTP" dir = in `
+        localport = 5985 protocol = TCP action = allow
 
 }
+
+
+function Enable-RDP() {
+    Write-Host -ForegroundColor DarkGreen  "Enabling Remote desktop"
+    Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server'-name "fDenyTSConnections" -Value 0
+    Start-Process netsh -ArgumentList "advfirewall firewall set rule group=`"remote desktop`" new enable=yes"
+}
+
+
+function RestartComputer() {
+    Restart-Computer -Force
+    shutdown /r /t 0
+}
+
+
+
+function CleanUp($ONE_INSTANCE_LOCKFILE, $main_ps1_autostart) {
+    net user administrator /active:no
+    Remove-ItemProperty -Force -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run" `
+        -Name $main_ps1_autostart.name
+    $ONE_INSTANCE_LOCKFILE.Close()
+    Remove-Item -Path $ONE_INSTANCE_LOCKFILE.Name -Force
+    $ONE_INSTANCE_LOCKFILE.Dispose()
+    Remove-Item -Path $DoneList  -Force
+}
+
+
+//TODO
+function LogError {
+    param($e)
+    $errTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $errMessage = "Time: $errTime`n"
+    $errMessage += "Exception: $( $e.GetType().FullName )`n"
+    $errMessage += "Message: $( $e.Message )`n"
+    $errMessage += "StackTrace: $( $e.StackTrace )`n"
+    Add-Content -Path $errorLog -Value $errMessage
+}
+
 
 ##################################
 # Entrypoint
-
-if ($UnZip) {
-    _unzip $UnZip $Dest
-    exit
+try {
+    # Skip already installed packages across reboots
+    Write-Output $null >> $DONE_FILE
+    $doneLog = Get-Content $DONE_FILE
+    Main
 }
-if ($msu) {
-    wusaf($msu)
-    exit
+catch {
+    LogError $_
+    # Rethrow error to terminate after logging
+    throw $_
+    Write-Error "Critical error occurred. Terminating."
+    exit 1
 }
-
-# Skip already installed packages
-Write-Output $null >> $INSTALL_LOG
-$_installed = Get-Content $INSTALL_LOG
-Main
-
-
-
