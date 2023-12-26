@@ -16,7 +16,6 @@ public enum NetworkConnectivityLevels {Connected = 1,Disconnected = 2,All = 3}
 [Guid("DCB00002-570F-4A9B-8D69-199FDBA5723B")]
 public interface INetwork{}
 
-public interface INetworkConnection { };
 [ComImport]
 [Guid("DCB00000-570F-4A9B-8D69-199FDBA5723B")]
 [TypeLibType((short)0x1040)]
