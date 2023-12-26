@@ -26,9 +26,9 @@ public interface INetworkListManager
     IEnumerable GetNetworks([In] NetworkConnectivityLevels Flags);
 }
 
-public class Program
+public class WinImageBuilderAutomation
 {
-    public static void Main()
+    public static void Run()
     {
         SetNetworksLocationToPrivate();
     }
